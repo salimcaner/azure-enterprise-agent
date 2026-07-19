@@ -13,6 +13,7 @@ from azure.search.documents.indexes.models import (
 )
 
 from app.core.config import settings
+from app.models.search import SearchResult
 
 
 class SearchService:
@@ -30,23 +31,40 @@ class SearchService:
             credential=AzureKeyCredential(settings.search_api_key),
         )
 
-    def upload_documents(self, documents: list[dict]) -> None:
+    def upload(self, documents: list[dict]) -> None:
         self._client.upload_documents(documents=documents)
 
-    def search_documents(self, embedding: list[float], top: int = 3) -> list[dict]:
+    def search(self, embedding: list[float], query: str = None, top: int = 5) -> list[SearchResult]:
         vector_query = VectorizedQuery(
             vector=embedding,
             k_nearest_neighbors=top,
-            fields="embedding",
+            fields="text_vector",
         )
 
         results = self._client.search(
-            search_text=None,
+            search_text=query,
             vector_queries=[vector_query],
-            select=["content"],
+            select=[
+                "chunk",
+                "title",
+                "parent_id",
+            ],
         )
 
-        return list(results)
+        return [
+            SearchResult(
+                content=result["chunk"],
+                score=result.get("@search.score", 0.0),
+                metadata={
+                    "file_name": result.get("title"),
+                    "file_type": result.get("title", "").split(".")[-1] if result.get("title") and "." in result.get("title") else "pdf",
+                    "uploaded_at": None,
+                    "chunk_index": 0,
+                    "document_id": result.get("parent_id"),
+                },
+            )
+            for result in results
+        ]
 
     def create_index(self) -> None:
         index = SearchIndex(
@@ -68,6 +86,34 @@ class SearchService:
                     vector_search_dimensions=1536,
                     vector_search_profile_name="default-profile",
                 ),
+                SearchField(
+                    name="file_name",
+                    type=SearchFieldDataType.String,
+                    searchable=True,
+                    filterable=True,
+                ),
+                SimpleField(
+                    name="file_type",
+                    type=SearchFieldDataType.String,
+                    filterable=True,
+                ),
+                SimpleField(
+                    name="uploaded_at",
+                    type=SearchFieldDataType.DateTimeOffset,
+                    filterable=True,
+                    sortable=True,
+                ),
+                SimpleField(
+                    name="chunk_index",
+                    type=SearchFieldDataType.Int32,
+                    filterable=True,
+                    sortable=True,
+                ),
+                SimpleField(
+                    name="document_id",
+                    type=SearchFieldDataType.String,
+                    filterable=True,
+                ),
             ],
             vector_search=VectorSearch(
                 algorithms=[
@@ -85,3 +131,45 @@ class SearchService:
         )
 
         self._index_client.create_or_update_index(index)
+
+    def list_documents(self) -> list[dict]:
+        results = self._client.search(
+            search_text="*",
+            select=["parent_id", "title"],
+            top=1000,
+        )
+
+        unique_docs = {}
+        for r in results:
+            doc_id = r.get("parent_id")
+            if doc_id and doc_id not in unique_docs:
+                unique_docs[doc_id] = {
+                    "document_id": doc_id,
+                    "file_name": r.get("title"),
+                    "file_type": r.get("title", "").split(".")[-1] if r.get("title") and "." in r.get("title") else "pdf",
+                    "uploaded_at": None,
+                }
+
+        return list(unique_docs.values())
+
+    def get_document_by_id(self, document_id: str) -> list[dict]:
+        results = self._client.search(
+            search_text="*",
+            filter=f"parent_id eq '{document_id}'",
+            select=["title"],
+            top=1,
+        )
+        return list(results)
+
+    def delete_document(self, document_id: str) -> None:
+        results = self._client.search(
+            search_text="*",
+            filter=f"parent_id eq '{document_id}'",
+            select=["chunk_id"],
+            top=1000,
+        )
+        keys_to_delete = [{"chunk_id": r["chunk_id"]} for r in results]
+
+        if keys_to_delete:
+            self._client.delete_documents(documents=keys_to_delete)
+

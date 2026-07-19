@@ -1,6 +1,14 @@
+from app.prompts.chat_prompt import CHAT_SYSTEM_PROMPT
+
+
 class ConversationService:
     def __init__(self):
-        self.messages = []
+        self.messages = [
+            {
+                "role": "system",
+                "content": CHAT_SYSTEM_PROMPT
+            }
+        ]
 
     def add_user_message(self, message: str):
         self.messages.append(
@@ -22,4 +30,9 @@ class ConversationService:
         return self.messages
 
     def clear(self):
-        self.messages.clear()
+        self.messages = [
+            {
+                "role": "system",
+                "content": CHAT_SYSTEM_PROMPT
+            }
+        ]
